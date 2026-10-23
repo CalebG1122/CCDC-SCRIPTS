@@ -1,44 +1,93 @@
 #!/bin/bash
-# 02-services.sh  (checklist steps 5-6: turn off unneeded services, then inspect the rest)
-# Dry run by default:  sudo ./02-services.sh [--apply] [--no-ssh] [--purge]
-#   --no-ssh  also disables sshd (ONLY if you have console access and the comp doesn't score SSH)
-#   --purge   also uninstalls the packages in PKGS
-set -u
-[ "$(id -u)" -eq 0 ] || { echo "Run as root."; exit 1; }
-
-# ===== EDIT: anything the comp SCORES must NOT be in these lists =====
-KILL="telnet.socket rsh.socket rlogin.socket rexec.socket tftp.socket vsftpd proftpd cups avahi-daemon bluetooth rpcbind nfs-server smb nmb snmpd"
-PKGS="telnet-server rsh-server vsftpd tftp-server"
-# =====================================================================
-
-APPLY=0; NOSSH=0; PURGE=0
-for a in "$@"; do case "$a" in --apply) APPLY=1;; --no-ssh) NOSSH=1;; --purge) PURGE=1;; esac; done
-run() { if [ "$APPLY" -eq 1 ]; then echo "+ $*"; "$@"; else echo "[dry-run] $*"; fi; }
-[ "$NOSSH" -eq 1 ] && KILL="$KILL sshd ssh ssh.socket"
-
-echo "== 5. Disable unneeded services =="
-for s in $KILL; do
-  if systemctl cat "$s" >/dev/null 2>&1; then
-    run systemctl disable --now "$s"
-    run systemctl mask "$s"
-  else
-    echo "skip (not installed): $s"
-  fi
+# Inventory and selectively disable services; package removals are interactive.
+set -Eeuo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+usage() {
+  cat <<'EOF'
+Usage: 02-services.sh [--apply] [--disable UNIT ...] [--no-ssh --console] [--purge]
+No units are disabled unless explicitly selected. --no-ssh additionally selects
+sshd.service, ssh.service and ssh.socket and requires --console with no SSH session.
+Each unit requires confirmation. --purge reviews installed legacy server packages
+using the native package manager's interactive dependency/removal confirmation.
+Do not select services scored by the competition. Inventory is read-only.
+EOF
+}
+APPLY=0 NOSSH=0 CONSOLE=0 PURGE=0 STATUS=0 BACKUP=''
+UNITS=()
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 2; }
+while (($#)); do
+  case $1 in
+    --help|-h) usage; exit 0 ;;
+    --apply) APPLY=1 ;;
+    --no-ssh) NOSSH=1 ;;
+    --console) CONSOLE=1 ;;
+    --purge) PURGE=1 ;;
+    --disable)
+      (($# >= 2)) || die '--disable needs a unit'
+      [[ $2 =~ ^[a-zA-Z0-9_@.:-]+\.(service|socket|timer)$ && $2 != -* ]] || die 'use an explicit service/socket/timer unit name'
+      UNITS+=("$2"); shift ;;
+    *) die "unknown option: $1" ;;
+  esac; shift
 done
-
-if [ "$PURGE" -eq 1 ]; then
-  echo; echo "-- removing packages"
-  if command -v dnf >/dev/null; then run dnf remove -y $PKGS
-  elif command -v apt-get >/dev/null; then run apt-get purge -y $PKGS
-  fi
+(( ! APPLY || EUID == 0 )) || die '--apply requires root'
+if ((NOSSH)); then
+  ((CONSOLE)) && [[ -z ${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-} ]] || die '--no-ssh requires --console from a local console'
+  UNITS+=(sshd.service ssh.service ssh.socket)
 fi
-
-echo; echo "== 6. Inspect what is left =="
-echo "-- enabled services:"
-systemctl list-unit-files --type=service --state=enabled --no-pager
-echo; echo "-- running services:"
-systemctl list-units --type=service --state=running --no-pager
-echo; echo "-- listening ports:"
-ss -tlnup
-
-[ "$APPLY" -eq 0 ] && echo && echo "Dry run only. Re-run with --apply to make changes."
+if ((APPLY)) && { ((${#UNITS[@]})) || ((PURGE)); }; then
+  [[ -t 0 && -t 1 ]] || die '--apply changes require an interactive terminal'
+fi
+command -v systemctl >/dev/null || die 'systemctl unavailable'
+backup() {
+  [[ -z $BACKUP ]] || return 0
+  BACKUP=$(umask 077; mktemp -d /var/lib/ccdc-services.XXXXXXXX)
+  systemctl list-unit-files --no-pager > "$BACKUP/unit-files.txt"
+  systemctl list-units --all --no-pager > "$BACKUP/units.txt"
+  printf 'Pre-change service inventory: %s\n' "$BACKUP"
+}
+for unit in "${UNITS[@]}"; do
+  case $unit in ssh.service|sshd.service|ssh.socket|sshd.socket|sshd@*.service|ssh@*.service)
+    ((CONSOLE)) && [[ -z ${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-} ]] || die 'SSH changes require --console from a local console' ;;
+  esac
+  load=$(systemctl show "$unit" -p LoadState --value) || { STATUS=1; continue; }
+  if [[ $load == not-found ]]; then printf 'Absent: %s\n' "$unit"; continue; fi
+  printf '\nProposed: disable and stop %s, then mask it.\n' "$unit"
+  systemctl --no-pager cat "$unit" || { STATUS=1; continue; }
+  ((APPLY)) || continue
+  printf 'Type the full unit name to confirm: '; IFS= read -r answer || continue
+  [[ $answer == "$unit" ]] || continue
+  backup
+  if ! systemctl disable --now "$unit"; then STATUS=1; continue; fi
+  systemctl mask "$unit" || STATUS=1
+done
+if ((PURGE)); then
+  packages=()
+  if command -v dpkg-query >/dev/null && [[ -f /var/lib/dpkg/status ]]; then
+    for p in telnetd inetutils-telnetd rsh-server tftpd tftpd-hpa vsftpd; do
+      state=$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null) || continue
+      [[ $state != 'install ok installed' ]] || packages+=("$p")
+    done
+    manager=(apt-get purge --no-auto-remove)
+  elif command -v rpm >/dev/null; then
+    for p in telnet-server rsh-server vsftpd tftp-server; do
+      if rpm -q "$p" >/dev/null 2>&1; then packages+=("$p"); fi
+    done
+    if command -v dnf >/dev/null; then manager=(dnf remove --setopt=clean_requirements_on_remove=False)
+    elif command -v yum >/dev/null; then manager=(yum remove)
+    else die 'no supported RPM package manager'; fi
+  else die 'no supported package database'; fi
+  if ((${#packages[@]})); then
+    printf '\nInstalled package removal candidates: '; printf '%s ' "${packages[@]}"; printf '\n'
+    if ((APPLY)); then
+      backup
+      printf '%s\n' "${packages[@]}" > "$BACKUP/package-candidates.txt"
+      printf 'Review ALL dependent removals in the package manager prompt.\n'
+      "${manager[@]}" "${packages[@]}" || STATUS=1
+    fi
+  else printf 'No matching installed packages.\n'; fi
+fi
+systemctl list-unit-files --type=service --state=enabled --no-pager || STATUS=1
+systemctl list-units --type=service --state=running --no-pager || STATUS=1
+if command -v ss >/dev/null; then ss -tlnup || STATUS=1; else printf 'INCOMPLETE: ss unavailable\n' >&2; STATUS=1; fi
+((APPLY)) || printf 'Dry run; no changes made.\n'
+exit "$STATUS"

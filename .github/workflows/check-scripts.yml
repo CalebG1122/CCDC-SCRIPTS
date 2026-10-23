@@ -1,0 +1,12 @@
+name: Check administrative scripts
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Syntax, safe plans, download failure and isolated rollback regression tests
+        run: python3 tests/test_scripts.py
