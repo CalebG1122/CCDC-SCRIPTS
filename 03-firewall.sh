@@ -8,8 +8,9 @@ usage() {
 Usage: 03-firewall.sh --management-source CIDR [repeatable]
        [--web-source CIDR ...] [--forwarder-source CIDR ...]
        (--scoring-source CIDR ... | --no-scoring)
-       [--ssh-port PORT] [--no-ssh --console] [--apply]
-Default prints a read-only rule plan. Web/forwarder sources default to management
+       [--ssh-port PORT] [--no-ssh --console] [--apply] [--verbose]
+Default prints a short read-only plan. --verbose shows every rule command.
+Web/forwarder sources default to management
 sources. Scoring sources can reach SSH, web (8000), forwarder (9997), HEC (8088).
 IPv4 and IPv6 CIDRs are supported. Missing IPv6 allowances deny new IPv6 service
 connections. Existing connections, loopback and ICMP remain allowed. Port 8089
@@ -27,12 +28,13 @@ It does not stop, disable, reload or persist another firewall manager.
 EOF
 }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 2; }
-APPLY=0 SCORING_ACK=0 NO_SSH=0 CONSOLE=0 SSH_PORT=22
+APPLY=0 SCORING_ACK=0 NO_SSH=0 CONSOLE=0 SSH_PORT=22 VERBOSE=0
 MGMT=() WEB=() FWD=() SCORE=()
 while (($#)); do
   case $1 in
     --help|-h) usage; exit 0 ;;
     --apply) APPLY=1 ;;
+    --verbose) VERBOSE=1 ;;
     --no-scoring) SCORING_ACK=1 ;;
     --no-ssh) NO_SSH=1 ;;
     --console) CONSOLE=1 ;;
@@ -124,6 +126,17 @@ plan_family() {
   fi
 }
 if ((!APPLY)); then
+  if ((!VERBOSE)); then
+    printf 'Firewall plan only; no changes made.\n'
+    printf 'Management sources: %s | Web: %s | Forwarder: %s | Scoring: %s\n' "${#MGMT[@]}" "${#WEB[@]}" "${#FWD[@]}" "${#SCORE[@]}"
+    if ((NO_SSH)); then printf 'New SSH connections: denied.\n'
+    else printf 'SSH port %s: management/scoring sources only.\n' "$SSH_PORT"; fi
+    printf 'Ports 8000/9997/8088: selected sources only; external 8089 denied.\n'
+    printf 'Other new inbound traffic denied; existing sessions/loopback/ICMP allowed.\n'
+    printf 'IPv4 and IPv6 covered; Docker rules require DOCKER-USER hooks.\n'
+    printf 'Use --verbose for every rule, or --apply for confirmed runtime changes.\n'
+    exit 0
+  fi
   printf '# Plan only; no firewall queries, temporary files or writes.\n'
   printf '# Docker rules shown conditionally; installed only where DOCKER-USER exists.\n'
   plan_family iptables 4 1 CCDC_INPUT_PLAN CCDC_DOCKER_PLAN

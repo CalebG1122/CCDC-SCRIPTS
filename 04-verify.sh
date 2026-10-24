@@ -2,8 +2,42 @@
 # Read-only inventory; exit 1 means one or more checks were unavailable/incomplete.
 set -uo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
-if (($#)); then
-  case $1 in --help|-h) printf 'Usage: sudo ./04-verify.sh\nRead-only, uncapped inventory. Output may contain secrets. Exit 1 = incomplete.\n'; exit 0 ;; *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;; esac
+VERBOSE=0
+for arg in "$@"; do
+  case $arg in
+    --verbose) VERBOSE=1 ;;
+    --help|-h) printf 'Usage: sudo ./04-verify.sh [--verbose]\nDefault: brief summary. --verbose: full uncapped inventory (sensitive).\nAll checks still run; exit 1 = incomplete.\n'; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+if ((!VERBOSE)); then
+  # Stream the full scan into an in-memory summary; no logs or temporary files.
+  # Stderr remains visible, and the worker exit status is preserved.
+  bash "$0" --verbose | awk '
+    /^===== .* =====$/ {section=$0; next}
+    section == "===== UID 0 accounts =====" && /^[^:]+:0:/ {
+      split($0, fields, ":"); if (fields[1] != "root") {extra++; if (extra<=5) names=names "  REVIEW: extra UID 0 account " fields[1] "\n"}; next
+    }
+    section == "===== Local users and shells =====" && / -> / {users++; next}
+    section == "===== Enabled service units =====" && /\.service[[:space:]]/ {enabled++; next}
+    section == "===== Running service units =====" && /\.service[[:space:]]/ {running++; next}
+    section == "===== Listening ports =====" && /^(tcp|udp)[[:space:]]/ {sockets++; if(sockets<=6) ports=ports "  " $0 "\n"; next}
+    section == "===== Files in \/etc modified in the last 24 hours (all matches) =====" && /^\// {recent++; next}
+    section == "===== SUID binaries on root filesystem only (add other mounts separately) =====" && /^\// {suid++; next}
+    END {
+      print "Verification summary (inventory, not a clean bill of health)"
+      printf "Local accounts: %d | Extra UID 0 accounts: %d\n",users,extra
+      printf "%s",names
+      printf "Enabled services: %d | Running services: %d\n",enabled,running
+      printf "Listening sockets: %d (showing up to 6; review expected ports)\n",sockets
+      printf "%s",ports
+      printf "Recent /etc files: %d | SUID files on root filesystem: %d\n",recent,suid
+      print "Cron, SSH, sudoers and firewall checks also ran; failures appear on stderr."
+      print "Use --verbose for full listings. Hidden/recent files are not proof of compromise."
+    }'
+  codes=("${PIPESTATUS[@]}")
+  ((codes[1] == 0)) || exit 1
+  exit "${codes[0]}"
 fi
 STATUS=0
 warn() { printf 'INCOMPLETE: %s\n' "$*" >&2; STATUS=1; }

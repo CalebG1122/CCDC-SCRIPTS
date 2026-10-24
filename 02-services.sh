@@ -4,7 +4,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 usage() {
   cat <<'EOF'
-Usage: 02-services.sh [--apply] [--disable UNIT ...] [--no-ssh --console] [--purge]
+Usage: 02-services.sh [--verbose] [--apply] [--disable UNIT ...] [--no-ssh --console] [--purge]
 No units are disabled unless explicitly selected. --no-ssh additionally selects
 sshd.service, ssh.service and ssh.socket and requires --console with no SSH session.
 Each unit requires confirmation. --purge reviews installed legacy server packages
@@ -12,13 +12,14 @@ using the native package manager's interactive dependency/removal confirmation.
 Do not select services scored by the competition. Inventory is read-only.
 EOF
 }
-APPLY=0 NOSSH=0 CONSOLE=0 PURGE=0 STATUS=0 BACKUP=''
+APPLY=0 NOSSH=0 CONSOLE=0 PURGE=0 STATUS=0 BACKUP='' VERBOSE=0
 UNITS=()
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 2; }
 while (($#)); do
   case $1 in
     --help|-h) usage; exit 0 ;;
     --apply) APPLY=1 ;;
+    --verbose) VERBOSE=1 ;;
     --no-ssh) NOSSH=1 ;;
     --console) CONSOLE=1 ;;
     --purge) PURGE=1 ;;
@@ -52,7 +53,7 @@ for unit in "${UNITS[@]}"; do
   load=$(systemctl show "$unit" -p LoadState --value) || { STATUS=1; continue; }
   if [[ $load == not-found ]]; then printf 'Absent: %s\n' "$unit"; continue; fi
   printf '\nProposed: disable and stop %s, then mask it.\n' "$unit"
-  systemctl --no-pager cat "$unit" || { STATUS=1; continue; }
+  if ((VERBOSE || APPLY)); then systemctl --no-pager cat "$unit" || { STATUS=1; continue; }; fi
   ((APPLY)) || continue
   printf 'Type the full unit name to confirm: '; IFS= read -r answer || continue
   [[ $answer == "$unit" ]] || continue
@@ -86,8 +87,17 @@ if ((PURGE)); then
     fi
   else printf 'No matching installed packages.\n'; fi
 fi
-systemctl list-unit-files --type=service --state=enabled --no-pager || STATUS=1
-systemctl list-units --type=service --state=running --no-pager || STATUS=1
-if command -v ss >/dev/null; then ss -tlnup || STATUS=1; else printf 'INCOMPLETE: ss unavailable\n' >&2; STATUS=1; fi
+inventory() {
+  local label=$1 output; shift
+  if output=$("$@"); then
+    if ((VERBOSE)); then printf '%s\n%s\n' "$label" "$output"
+    else printf '%s: %s\n' "$label" "$(printf '%s\n' "$output" | awk 'NF {n++} END {print n+0}')"; fi
+  else printf 'INCOMPLETE: %s failed\n' "$label" >&2; STATUS=1; fi
+}
+inventory 'Enabled services' systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend
+inventory 'Running services' systemctl list-units --type=service --state=running --no-pager --no-legend
+if command -v ss >/dev/null; then inventory 'Listening sockets (not a threat verdict)' ss -tlnup --no-header
+else printf 'INCOMPLETE: ss unavailable\n' >&2; STATUS=1; fi
 ((APPLY)) || printf 'Dry run; no changes made.\n'
+((VERBOSE)) || printf 'Use --verbose to see service names and ports.\n'
 exit "$STATUS"

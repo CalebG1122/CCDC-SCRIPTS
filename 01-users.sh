@@ -4,7 +4,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 usage() {
   cat <<'EOF'
-Usage: 01-users.sh [--apply] [--restrict-admins --keep-admin USER ...]
+Usage: 01-users.sh [--verbose] [--apply] [--restrict-admins --keep-admin USER ...]
                    [--restrict-logins --keep-login USER ...] [--password USER ...]
 Without restriction flags, only inventory is performed. Each restriction requires
 an explicit keep list. Root and the invoking sudo user are always protected.
@@ -12,7 +12,7 @@ Both wheel and sudo are inspected. Primary-group admin grants and sudoers grants
 are reported for manual review, not rewritten. Each change requires confirmation.
 EOF
 }
-APPLY=0 ADMINS=0 LOGINS=0 STATUS=0 BACKUP=''
+APPLY=0 ADMINS=0 LOGINS=0 STATUS=0 BACKUP='' VERBOSE=0 LOGIN_COUNT=0
 KEEP_ADMINS=(root) KEEP_LOGIN=(root) PASSWORDS=()
 ADMIN_ARGS=0 LOGIN_ARGS=0
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 2; }
@@ -20,6 +20,7 @@ while (($#)); do
   case $1 in
     -h|--help) usage; exit 0 ;;
     --apply) APPLY=1 ;;
+    --verbose) VERBOSE=1 ;;
     --restrict-admins) ADMINS=1 ;;
     --restrict-logins) LOGINS=1 ;;
     --keep-admin|--keep-login|--password)
@@ -66,15 +67,15 @@ change() {
   backup
   if ! "$@"; then printf 'FAILED: %s\n' "$label" >&2; STATUS=1; fi
 }
-printf 'Logged-in users:\n'; who || STATUS=1
-printf '\nUID 0 accounts (review extras):\n'
-awk -F: '$3 == 0 {print $1 ":" $3 ":" $6 ":" $7}' /etc/passwd
+if ((VERBOSE)); then printf 'Logged-in users:\n'; who || STATUS=1; fi
+printf 'Account review\n'
+awk -F: '$3 == 0 && $1 != "root" {print "REVIEW: extra UID 0 account: " $1; n++} END {if (!n) print "Extra UID 0 accounts: none in local passwd"}' /etc/passwd
 for group in wheel sudo; do
   record=$(getent group "$group") || continue
   IFS=: read -r name unused admin_gid members <<< "$record"
   printf '\nAdmin group %s: %s\n' "$name" "$members"
   while IFS=: read -r user unused uid gid rest; do
-    if [[ $gid == "$admin_gid" ]]; then
+    if [[ $gid == "$admin_gid" && $user != root ]]; then
       printf 'REVIEW: %s has primary admin group %s; no automatic primary-group change.\n' "$user" "$group"
     fi
   done < /etc/passwd
@@ -89,16 +90,22 @@ done
 while IFS=: read -r user unused uid gid gecos home shell; do
   [[ $uid =~ ^[0-9]+$ ]] || continue
   ((uid >= 1000 && uid < 60000)) || continue
-  printf 'Login account: %s -> %s\n' "$user" "$shell"
+  ((LOGIN_COUNT+=1))
+  if ((VERBOSE)); then printf 'Login account: %s -> %s\n' "$user" "$shell"; fi
   case $shell in */nologin|*/false) continue ;; esac
   if ((LOGINS)) && ! contains "$user" "${KEEP_LOGIN[@]}"; then
     change "Set nologin for $user (does not terminate sessions or revoke SSH forwarding)" usermod -s "$NOLOGIN" "$user"
   fi
 done < /etc/passwd
+printf 'Regular local accounts checked: %s\n' "$LOGIN_COUNT"
 for user in "${PASSWORDS[@]}"; do change "Change password for $user" passwd "$user"; done
 printf '\nReview effective sudoers grants, includes and directory/NSS accounts separately.\n'
 if ((EUID == 0)); then
-  if command -v visudo >/dev/null; then visudo -c || STATUS=1; else printf 'INCOMPLETE: visudo unavailable\n' >&2; STATUS=1; fi
+  if command -v visudo >/dev/null; then
+    if ((VERBOSE)); then visudo -c || STATUS=1
+    else visudo -c >/dev/null || STATUS=1; fi
+  else printf 'INCOMPLETE: visudo unavailable\n' >&2; STATUS=1; fi
 fi
 ((APPLY)) || printf 'Dry run; no changes made.\n'
+((VERBOSE)) || printf 'Use --verbose for full account listings.\n'
 exit "$STATUS"

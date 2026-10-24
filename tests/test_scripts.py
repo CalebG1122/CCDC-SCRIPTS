@@ -38,7 +38,7 @@ class Scripts(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
 
     def test_firewall_address_validation_and_allowlist_plan(self):
-        args = ['--management-source', '192.0.2.7/24', '--management-source', '2001:db8::/64',
+        args = ['--verbose', '--management-source', '192.0.2.7/24', '--management-source', '2001:db8::/64',
                 '--scoring-source', '198.51.100.10', '--ssh-port', '2222']
         result = run('03-firewall.sh', *args, env={**os.environ, 'SSH_CONNECTION': ''})
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -61,6 +61,44 @@ class Scripts(unittest.TestCase):
                       ['--forwarder-source', '$(touch /tmp/should-not-exist)']]:
             self.assertEqual(run('03-firewall.sh', *args, *extra).returncode, 2)
         self.assertEqual(run('03-firewall.sh', '--management-source', '192.0.2.0/24').returncode, 2)
+
+    def test_firewall_default_output_is_short(self):
+        result = run('03-firewall.sh', '--management-source', '192.0.2.0/24', '--no-scoring',
+                     env={**os.environ, 'SSH_CONNECTION': ''})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLessEqual(len(result.stdout.splitlines()), 9)
+        self.assertNotIn(' -A ', result.stdout)
+        self.assertIn('--verbose', result.stdout)
+
+    def test_verifier_summary_preserves_errors_and_caps_listings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            tools = directory / 'tools'
+            tools.mkdir()
+            # The outer script still parses its real options and runs its real
+            # summary. Only its recursive verbose scan is replaced with a fixture.
+            worker = tools / 'bash'
+            worker.write_text('''#!/bin/bash
+printf 'INCOMPLETE: fixture check failed\\n' >&2
+printf '\\n===== UID 0 accounts =====\\nroot:0:/root:/bin/bash\\nextra:0:/extra:/bin/bash\\n'
+printf '\\n===== Local users and shells =====\\nroot -> /bin/bash\\n'
+printf '\\n===== Listening ports =====\\n'
+for ((i=0;i<100;i++)); do printf 'tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* SECRET-FIXTURE\\n'; done
+printf '\\n===== sudoers standard paths (custom includes need manual follow-up) =====\\nKEY-CONTENT-SECRET\\n'
+exit 1
+''')
+            worker.chmod(0o700)
+            script = directory / '04-verify.sh'
+            script.write_text((ROOT / '04-verify.sh').read_text().replace(FIXED_PATH,
+                              f'export PATH={shlex.quote(str(tools))}:/usr/bin:/bin LC_ALL=C'))
+            result = subprocess.run(['/bin/bash', str(script)], text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('fixture check failed', result.stderr)
+            self.assertIn('Extra UID 0 accounts: 1', result.stdout)
+            self.assertIn('Listening sockets: 100', result.stdout)
+            self.assertEqual(result.stdout.count('SECRET-FIXTURE'), 6)
+            self.assertNotIn('KEY-CONTENT-SECRET', result.stdout)
+            self.assertLessEqual(len(result.stdout.splitlines()), 16)
 
     def test_download_requires_immutable_commit(self):
         for value in ['', 'main', 'v1.0', '1234', 'g' * 40]:

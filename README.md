@@ -3,6 +3,10 @@
 Linux and Bash 4+ required. Review the competition's scored services and account
 requirements before applying a change. Scripts default to inventory/planning;
 help works without root. They never evaluate discovered configuration commands.
+Default output is a brief summary. Add --verbose to accounts, services, firewall
+or verification for the detailed listings. All verification checks still run in
+summary mode; their failure diagnostics and exit status remain visible. Explicit
+changes still show their proposals and confirmations.
 
 ```bash
 python3 tests/test_scripts.py
@@ -92,7 +96,8 @@ retain an INCOMPLETE marker. Only --baseline runs the downloaded verifier, after
 interactive confirmation as root; output is private baseline.txt. Review downloaded
 code first. The hunter in PR #1 is intentionally independent of this fix PR.
 
-04-verify.sh has uncapped firewall output, visible diagnostics, and status 1 for
+04-verify.sh has a short default summary, uncapped firewall output with --verbose,
+visible diagnostics, and status 1 for
 incomplete checks. Optional absent backends are labeled. A root-filesystem SUID
 search does not cover other mounts. Output may contain credentials or key comments;
 save it privately (for example, umask 077 before redirecting). Reads may update
