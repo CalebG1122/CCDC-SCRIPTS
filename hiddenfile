@@ -1,0 +1,19 @@
+#!/bin/bash
+#sudo bash 00-hiddenfile.sh
+#sudo bash 00-hiddenfile.sh  /home/username
+# Define the target directory (defaults to '/' for the whole system if no argument is provided)
+TARGET_DIR="${1:-/}"
+
+# Verify if the provided path is a valid directory
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "Error: '$TARGET_DIR' is not a valid directory." >&2
+    exit 1
+fi
+
+echo "Searching for files inside hidden directories in: $(realpath "$TARGET_DIR")"
+echo "--------------------------------------------------"
+
+# This pattern looks for any path component starting with a '.' followed by a slash
+find "$TARGET_DIR" -type f -path '*/.*' -print0 2>/dev/null | while IFS= read -r -d '' file; do
+    echo "Found: $file"
+done
