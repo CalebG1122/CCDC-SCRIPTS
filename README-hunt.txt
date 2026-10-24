@@ -7,6 +7,7 @@ Run:
   chmod 700 06-hunt.sh check-06-hunt.sh
   ./check-06-hunt.sh ./06-hunt.sh
   sudo ./06-hunt.sh
+  sudo ./06-hunt.sh --verbose
   sudo ./06-hunt.sh --since '2026-10-23 08:00' --root /etc --root /home
   sudo ./06-hunt.sh --clean
 
@@ -15,6 +16,10 @@ Default mode creates no temporary files or other intentional filesystem writes.
 Normal access-time updates, audit logging and command implementation behavior
 are controlled by the OS. A forensic acquisition should use a read-only mount.
 Output is sensitive: at job environments can contain credentials.
+Default output is now a short summary with counts and at most five unowned-file
+samples and five extra UID 0 samples. All checks still run. --verbose reveals the
+full inventory. Errors remain on stderr and the original exit status is retained.
+--clean always displays full item details so confirmation remains informed.
 
 Interpretation:
 - Package ownership is context, not an integrity check. Package-owned files may

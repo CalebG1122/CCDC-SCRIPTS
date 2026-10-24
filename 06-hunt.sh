@@ -6,15 +6,17 @@ set -o pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 unset BASH_ENV ENV CDPATH
 shopt -s nullglob dotglob
-CLEAN=0 SINCE='6 hours ago' LIMIT=300
+ORIGINAL_ARGS=("$@")
+CLEAN=0 SINCE='6 hours ago' LIMIT=300 VERBOSE=0
 declare -a ROOTS=() CANDIDATES=() DIGESTS=()
 declare -A SEEN=()
 usage() {
   cat <<'EOF'
-Usage: sudo bash 06-hunt.sh [--since DATE] [--root DIR ...] [--limit N] [--clean]
+Usage: sudo bash 06-hunt.sh [--verbose] [--since DATE] [--root DIR ...] [--limit N] [--clean]
        bash 06-hunt.sh --help
 
-Default: read-only inventory; creates no temporary files or backups.
+Default: short read-only summary; creates no temporary files or backups.
+  --verbose     Show detailed inventory, commands and configuration contents.
   --since DATE  GNU date expression for recent mtime/ctime (default: 6 hours ago)
   --root DIR    Recent/hidden-file search root; repeatable. Default: /etc /var/spool
                 /usr/local /opt /tmp /var/tmp /root /home. Does not cross mounts.
@@ -40,6 +42,7 @@ while (($#)); do
   case $1 in
     --help|-h) usage; exit 0 ;;
     --clean) CLEAN=1 ;;
+    --verbose) VERBOSE=1 ;;
     --since|--root|--limit)
       (($# >= 2)) || die "$1 requires a value"
       case $1 in
@@ -54,6 +57,33 @@ done
 ((BASH_VERSINFO[0] >= 4)) || die 'Bash 4+ required'
 SINCE_EPOCH=$(date -d "$SINCE" +%s 2>/dev/null) || die 'invalid --since date'
 [[ $SINCE_EPOCH =~ ^-?[0-9]+$ ]] || die 'date did not produce an epoch'
+if ((!VERBOSE && !CLEAN)); then
+  # Read the complete scan as a stream and retain only counts and small samples.
+  # No temporary files or logs. Error diagnostics stay visible on stderr.
+  bash "$0" --verbose "${ORIGINAL_ARGS[@]}" | awk '
+    /^== .* ==$/ {section=$0; next}
+    /^\[(config|cron|systemd)\] / {path=$0; inspected++; next}
+    /^REVIEW: package ownership absent/ {unowned++; if(unowned<=5) samples=samples "  " path "\n"; next}
+    /^Symlink target:/ {links++; next}
+    section == "== Accounts, UID 0, SSH authorization and user systemd persistence ==" && /^[^:]+:uid=0:/ {
+      split($0,fields,":"); if(fields[1]!="root" && !seen[fields[1]]++) {extra++; if(extra<=5) names=names "  REVIEW: extra UID 0 account " fields[1] "\n"}; next
+    }
+    /^Job [0-9]+$/ {jobs++; next}
+    /^Matched [0-9]+ paths;/ {recent+=$2; roots++; next}
+    END {
+      print "Persistence summary (inventory, not a compromise verdict)"
+      printf "Configuration paths examined: %d | Symlinks: %d | Queued at jobs: %d\n",inspected,links,jobs
+      printf "Extra local UID 0 accounts: %d\n%s",extra,names
+      printf "Unowned/unknown-package files: %d (often legitimate; showing up to 5)\n",unowned
+      printf "%s",samples
+      printf "Recent or hidden paths: %d across %d roots (counts only; not flagged as malicious)\n",recent,roots
+      print "Cron, system/user systemd, sudoers and SSH were inspected; failures appear on stderr."
+      print "Use --verbose for commands, key entries and full details. --clean always shows item details."
+    }'
+  codes=("${PIPESTATUS[@]}")
+  ((codes[1] == 0)) || exit 1
+  exit "${codes[0]}"
+fi
 STATUS=0
 warn() { printf 'INCOMPLETE: %s\n' "$*" >&2; STATUS=1; }
 for tool in date find stat head sed awk sha256sum readlink; do
