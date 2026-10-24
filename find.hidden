@@ -1,0 +1,43 @@
+#!/bin/bash
+# sudo bash find.hidden /var/www/html
+# sudo bash find.hidden /tmp
+# sudo bash find.hidden/ > /root/hidden_files_scan.txt
+
+
+# Target directory defaults to / if none provided
+TARGET_DIR="${1:-/}"
+
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "[-] Error: '$TARGET_DIR' is not a valid directory." >&2
+    exit 1
+fi
+
+echo "=================================================="
+echo "  CCDC Hidden File & Threat Scanner"
+echo "  Target: $(realpath "$TARGET_DIR")"
+echo "  Time:   $(date)"
+echo "=================================================="
+
+# Exclude virtual filesystems (/proc, /sys, /dev, /run) to save speed/time
+find "$TARGET_DIR" \
+    \( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /var/lib/docker \) -prune \
+    -o -type f -name ".*" -print0 2>/dev/null | while IFS= read -r -d '' file; do
+
+    # Gather metadata: Permissions, Owner, Size, Modification Time
+    info=$(stat -c "%A %U:%G %s bytes %y" "$file" 2>/dev/null)
+    
+    # Identify actual file type
+    type_info=$(file -b "$file" 2>/dev/null)
+
+    # Fixed syntax: properly formatted multi-line if/else statement
+    if [ -x "$file" ] || [[ "$type_info" == *"executable"* ]] || [[ "$type_info" == *"script"* ]]; then
+        path_alert="[!] SUSPICIOUS"
+    else
+        path_alert="[*] INFO"
+    fi
+
+    echo "$path_alert File: $file"
+    echo "    Meta: $info"
+    echo "    Type: $type_info"
+    echo "--------------------------------------------------"
+done
