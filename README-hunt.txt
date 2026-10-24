@@ -28,6 +28,8 @@ Interpretation:
   units, generators and user units. Effective system service commands are queried
   from systemd. User managers are not contacted or started: their on-disk files
   are inventoried. Other XDG search paths may require manual inspection.
+  Template names such as user@.service are inspected on disk; their actual loaded
+  instances (for example user@1000.service) are queried for effective commands.
 - Review Exec*, EnvironmentFile, timer/socket targets and referenced scripts.
   The scanner never evaluates configuration or executes discovered commands.
 - sudoers includes and SSH Match/Include/custom authorization paths outside the

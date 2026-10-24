@@ -160,16 +160,31 @@ for d in /var/spool/at /var/spool/atjobs /var/spool/cron/atjobs; do
   for f in "$d"/*; do [[ -d $f ]] || inspect "$f"; done
 done
 section 'Systemd manager inventory and effective commands'
+# BEGIN SYSTEMD MANAGER CHECKS
 if command -v systemctl >/dev/null; then
   systemctl --no-pager list-unit-files --type=service,timer,socket || warn 'systemd unit-file listing unavailable'
   systemctl --no-pager list-timers --all || warn 'timer state unavailable'
   systemctl --no-pager list-sockets --all || warn 'socket state unavailable'
+  unit_files=$(systemctl --no-legend --no-pager --plain list-unit-files --type=service,timer,socket) || { warn 'systemd unit-file discovery failed'; unit_files=''; }
+  loaded_units=$(systemctl --no-legend --no-pager --plain list-units --all --type=service,timer,socket) || { warn 'loaded systemd unit discovery failed'; loaded_units=''; }
+  declare -A CHECKED_SYSTEMD=()
+  template_count=0
   while read -r unit rest; do
     [[ $unit == *.service || $unit == *.timer || $unit == *.socket ]] || continue
-    systemctl --no-pager show "$unit" -p Id -p FragmentPath -p DropInPaths -p User -p ExecStart -p ExecStartPre -p ExecStartPost -p ExecStop -p EnvironmentFiles -p Triggers -p UnitFileState | sed -n l || warn "cannot inspect unit: $unit"
-  done < <(systemctl --no-legend --no-pager list-unit-files --type=service,timer,socket)
+    [[ -z ${CHECKED_SYSTEMD["$unit"]+yes} ]] || continue
+    CHECKED_SYSTEMD["$unit"]=1
+    case $unit in
+      *@.service|*@.timer|*@.socket)
+        # Templates have no runtime object until instantiated. Their files and
+        # drop-ins remain covered by scan_units below; query actual instances.
+        ((template_count+=1)); continue ;;
+    esac
+    systemctl --no-pager show -p Id -p FragmentPath -p DropInPaths -p User -p ExecStart -p ExecStartPre -p ExecStartPost -p ExecStop -p EnvironmentFiles -p Triggers -p UnitFileState -- "$unit" | sed -n l || warn "cannot inspect unit: $unit"
+  done <<< "$unit_files"$'\n'"$loaded_units"
+  printf 'Systemd templates inspected on disk instead of as runtime units: %s\n' "$template_count"
 else warn 'systemctl unavailable; disk configuration inspected below'
 fi
+# END SYSTEMD MANAGER CHECKS
 scan_units() {
   local d=$1 f
   [[ -d $d ]] || return
