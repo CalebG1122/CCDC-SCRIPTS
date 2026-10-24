@@ -1,0 +1,14 @@
+name: Check persistence hunter
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Bash syntax and argument checks
+        run: bash check-06-hunt.sh ./06-hunt.sh
+      - name: Summary caps and error preservation
+        run: python3 tests/test_hunt_summary.py
