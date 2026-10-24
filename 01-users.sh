@@ -38,8 +38,8 @@ while IFS=: read -r user passwd uid gid gecos home shell; do
     echo "    Groups:   $groups_list"
     echo "    Status:   $last_login"
 
-    # Highlight extra UID 0 accounts immediately
-    if ((uid == 0 && user != "root")); then
+    # Fixed syntax: use proper string comparison for user name
+    if ((uid == 0)) && [[ "$user" != "root" ]]; then
         echo "    [!] CRITICAL WARNING: Extra account with UID 0 (Root privileges!)"
     fi
 
