@@ -1,6 +1,7 @@
 #!/bin/bash
-# Interactive CCDC User Account Auditor & Remediation Tool
-# Must be run as root
+# Ultimate CCDC Interactive User Account Auditor & Remediation Tool
+# Uses getent passwd, audits group memberships, shells, UIDs, and shadow status.
+# Must be run as root.
 
 set -Eeuo pipefail
 
@@ -10,25 +11,52 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 echo "=========================================================="
-echo "  CCDC Interactive User Account Review & Triage"
+echo "  CCDC Ultimate User Account Auditor & Triage"
 echo "  Time: $(date)"
 echo "=========================================================="
 
-# Iterate through all users in /etc/passwd
+# Iterate through all accounts using getent passwd (covers local, NSS, LDAP, SSSD)
 while IFS=: read -r user passwd uid gid gecos home shell; do
-    # Skip non-numeric UIDs just in case
     [[ $uid =~ ^[0-9]+$ ]] || continue
 
-    # AUTOMATIC FILTER: Skip standard system accounts (UID < 1000), 
-    # but KEEP UID 0 accounts so you can review extra root accounts!
-    if ((uid < 1000 && uid > 0)); then
-        continue
-    fi
-
-    # Gather user details
+    # Gather user intelligence
     groups_list=$(id -Gn "$user" 2>/dev/null | tr ' ' ',')
     last_login=$(lastlog -u "$user" 2>/dev/null | tail -n 1 || echo "No login data")
+    shadow_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2 " (" $3 " days password age)"}' || echo "Status unknown")
 
+    risk_flags=()
+
+    # 1. Check for extra UID 0 accounts
+    if ((uid == 0)) && [[ "$user" != "root" ]]; then
+        risk_flags+=("CRITICAL: Extra account with UID 0 (Full Root Privileges!)")
+    fi
+
+    # 2. Check for Low-UID (< 1000) anomalies
+    if ((uid > 0 && uid < 1000)); then
+        case "$shell" in
+            */nologin|*/false)
+                # If it's a standard system account, check if it illegally belongs to an admin group
+                if [[ "$groups_list" =~ (^|,)(wheel|sudo)(,|$) ]]; then
+                    risk_flags+=("SUSPICIOUS: Low-UID system account belongs to a privileged group ($groups_list)")
+                else
+                    # Clean system daemon, auto-skip to reduce competition noise
+                    continue
+                fi
+                ;;
+            *)
+                risk_flags+=("SUSPICIOUS: Low-UID account (<1000) has an interactive shell ($shell)")
+                ;;
+        esac
+    fi
+
+    # 3. Check regular accounts (UID >= 1000) for admin group membership
+    if ((uid >= 1000)); then
+        if [[ "$groups_list" =~ (^|,)(wheel|sudo)(,|$) ]]; then
+            risk_flags+=("NOTICE: User has administrative (wheel/sudo) access")
+        fi
+    fi
+
+    # Display Account Profile
     echo ""
     echo "--------------------------------------------------"
     echo "[*] Account Found: $user"
@@ -36,14 +64,21 @@ while IFS=: read -r user passwd uid gid gecos home shell; do
     echo "    Home:     $home"
     echo "    Shell:    $shell"
     echo "    Groups:   $groups_list"
-    echo "    Status:   $last_login"
+    echo "    Login:    $last_login"
+    echo "    Shadow:   $shadow_status"
 
-    # Fixed syntax: use proper string comparison for user name
-    if ((uid == 0)) && [[ "$user" != "root" ]]; then
-        echo "    [!] CRITICAL WARNING: Extra account with UID 0 (Root privileges!)"
+    # Display Risk Flags if any exist
+    if (( ${#risk_flags[@]} > 0 )); then
+        echo "    [!] SECURITY FLAGS:"
+        for flag in "${risk_flags[@]}"; do
+            echo "        -> $flag"
+        . done 2>/dev/null || echo "        -> $flag"
+        fi
+    else
+        echo "    [i] Profile looks standard."
     fi
 
-    # Interactive Prompt for real users (UID >= 1000 or extra UID 0)
+    # Interactive Triage Prompt
     while true; do
         read -p "Action for [$user] - [K]eep / [L]ock (nologin) / [R]emove user / [D]elete + home / [S]kip? " choice </dev/tty
         case "$choice" in
@@ -87,9 +122,9 @@ while IFS=: read -r user passwd uid gid gecos home shell; do
         esac
     done
 
-done < /etc/passwd
+done < <(getent passwd)
 
 echo ""
 echo "=========================================================="
-echo "  Account review complete!"
+echo "  Ultimate account review complete!"
 echo "=========================================================="
