@@ -9,9 +9,6 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Protect critical accounts automatically
-PROTECTED_USERS=("root" "${SUDO_USER:-$USER}" "daemon" "bin" "sys" "sync" "games" "man" "lp" "mail" "news" "uucp" "proxy" "www-data" "backup" "list" "irc" "gnats" "nobody" "systemd-network" "systemd-resolve" "syslog" "messagebus" "_apt" "uuidd" "dnsmasq" "landscape" "polkitd" "sshd" "splunk")
-
 echo "=========================================================="
 echo "  CCDC Interactive User Account Review & Triage"
 echo "  Time: $(date)"
@@ -22,14 +19,11 @@ while IFS=: read -r user passwd uid gid gecos home shell; do
     # Skip non-numeric UIDs just in case
     [[ $uid =~ ^[0-9]+$ ]] || continue
 
-    # Check if user is protected
-    is_protected=0
-    for p in "${PROTECTED_USERS[@]}"; do
-        if [[ $user == "$p" ]]; then
-            is_protected=1
-            break
-        fi
-    done
+    # AUTOMATIC FILTER: Skip standard system accounts (UID < 1000), 
+    # but KEEP UID 0 accounts so you can review extra root accounts!
+    if ((uid < 1000 && uid > 0)); then
+        continue
+    fi
 
     # Gather user details
     groups_list=$(id -Gn "$user" 2>/dev/null | tr ' ' ',')
@@ -43,18 +37,13 @@ while IFS=: read -r user passwd uid gid gecos home shell; do
     echo "    Shell:    $shell"
     echo "    Groups:   $groups_list"
     echo "    Status:   $last_login"
-    
-    if ((is_protected)); then
-        echo "    [i] Protected system account. Skipping interactive prompt."
-        continue
-    fi
 
     # Highlight extra UID 0 accounts immediately
-    if ((uid == 0)); then
-        echo "    [!] WARNING: This account has UID 0 (Root privileges!)"
+    if ((uid == 0 && user != "root")); then
+        echo "    [!] CRITICAL WARNING: Extra account with UID 0 (Root privileges!)"
     fi
 
-    # Interactive Prompt
+    # Interactive Prompt for real users (UID >= 1000 or extra UID 0)
     while true; do
         read -p "Action for [$user] - [K]eep / [L]ock (nologin) / [R]emove user / [D]elete + home / [S]kip? " choice </dev/tty
         case "$choice" in
