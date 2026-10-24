@@ -72,8 +72,7 @@ while IFS=: read -r user passwd uid gid gecos home shell; do
         echo "    [!] SECURITY FLAGS:"
         for flag in "${risk_flags[@]}"; do
             echo "        -> $flag"
-        . done 2>/dev/null || echo "        -> $flag"
-        fi
+        done
     else
         echo "    [i] Profile looks standard."
     fi
